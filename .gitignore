@@ -15,7 +15,6 @@ build/
 *.egg
 
 
-
 # Vector databases (ChromaDB, FAISS, etc.)
 chroma_db/
 chroma_temp/
