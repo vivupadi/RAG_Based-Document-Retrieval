@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 from backend.rag import RAGPipeline
+from backend.chunk_tuning import ChunkTuner
 
 st.set_page_config(page_title="RAG Q&A", layout="wide")
 
@@ -15,6 +16,7 @@ with st.sidebar:
     st.header("Settings")
 
     st.subheader("Retrieval")
+    use_query_reframing = st.checkbox("Enable Query Reframing", value=True)
     use_hybrid_search = st.checkbox("Enable Hybrid Search (Dense + Sparse)", value=False, help="Combines semantic (embedding) and keyword (BM25) search")
 
     if use_hybrid_search:
@@ -22,25 +24,26 @@ with st.sidebar:
     else:
         dense_weight = 0.5
 
-    st.subheader("Advanced")
-    use_reranking = st.checkbox("Enable Reranking", value=False)
-    use_query_reframing = st.checkbox("Enable Query Reframing", value=True)
-    use_guardrail = st.checkbox("Enable Safety Guardrail", value=True)
-
-    run_tuning = st.checkbox("Auto-tune parameters", value=False)
+    use_reranking = st.checkbox("Enable Reranking", value=True, help="Use cross-encoder to rerank results for better accuracy")
 
     st.divider()
 
+    st.subheader("Chunk Tuning")
+    run_chunk_tuning = st.checkbox("Auto-tune chunk parameters", value=False,
+                                    help="Find optimal chunk size, overlap, and top_k using grid search")
+
     # Clear chat button
+    st.divider()
     if st.button("Clear Chat History"):
         st.session_state.chat_history = []
         st.rerun()
 
-# File upload
+# File upload - Always visible
 uploaded_file = st.file_uploader("Upload document (PDF or TXT)", type=["pdf", "txt"])
 
+# Handle file upload
 if uploaded_file:
-    # Initialize or reuse pipeline (clear chat on new document)
+    # Initialize or update pipeline with new document
     if 'pipeline' not in st.session_state or st.session_state.get('last_file') != uploaded_file.name:
         st.session_state.last_file = uploaded_file.name
         st.session_state.chat_history = []  # Clear chat on new document
@@ -49,7 +52,6 @@ if uploaded_file:
             pipeline = RAGPipeline(
                 use_reranking=use_reranking,
                 use_query_reframing=use_query_reframing,
-                use_guardrail=use_guardrail,
                 use_hybrid_search=use_hybrid_search,
                 dense_weight=dense_weight
             )
@@ -57,27 +59,102 @@ if uploaded_file:
             pipeline.build_index(chunk_size=600, chunk_overlap=100)
 
         st.session_state.pipeline = pipeline
+        st.session_state.best_config = None  # Reset tuning config
         st.success(f"Document '{uploaded_file.name}' loaded successfully!")
     else:
         pipeline = st.session_state.pipeline
 
-    # Optional tuning
-    if run_tuning and st.button("Run Parameter Tuning"):
-        with st.spinner("Tuning parameters..."):
-            best_config = pipeline.tune_chunk_params()
+    # Chunk tuning section (only when file is uploaded)
+    if run_chunk_tuning:
+        st.divider()
+        st.subheader("Chunk Parameter Tuning")
 
-        if best_config:
-            st.success(f"Best config: chunk_size={best_config['chunk_size']}, overlap={best_config['overlap']}, top_k={best_config['top_k']}, score={best_config['score']:.2f}")
+        # Show current configuration if tuned
+        if 'best_config' in st.session_state and st.session_state.best_config:
+            st.success("✓ Using optimized configuration")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Chunk Size", st.session_state.best_config['chunk_size'])
+                st.metric("Overlap", st.session_state.best_config['overlap'])
+            with col2:
+                st.metric("Top K", st.session_state.best_config['top_k'])
+                st.metric("Score", f"{st.session_state.best_config['score']:.2f}/10")
+        else:
+            st.write("**Current settings:** chunk_size=600, overlap=100, top_k=3")
 
-            with st.spinner("Rebuilding index..."):
-                pipeline.rebuild_index(best_config)
-            st.success("Index rebuilt with optimal parameters")
+        if st.button("Run Grid Search & Apply"):
+            with st.spinner("Running hyperparameter tuning... This may take 2-5 minutes"):
+                tuner = ChunkTuner(pipeline.db)
 
-    st.divider()
+                # Run grid search with smaller search space for faster results
+                best_config = tuner.tune_parameters(
+                    chunk_sizes=[150, 300, 600, 800],
+                    overlaps=[50, 100, 150, 200],
+                    top_ks=[3, 4, 5]
+                )
 
-    # Chat interface
-    st.subheader("Chat with your document")
+                st.session_state.best_config = best_config
 
+            if st.session_state.best_config:
+                # Automatically apply the best configuration
+                with st.spinner("Applying best configuration and rebuilding index..."):
+                    tuner = ChunkTuner(pipeline.db)
+                    tuner.apply_best_config(st.session_state.best_config)
+                    pipeline.tuned_top_k = st.session_state.best_config['top_k']
+
+                st.success("✓ Tuning complete and applied!")
+                st.info(f"Now using: chunk_size={st.session_state.best_config['chunk_size']}, "
+                        f"overlap={st.session_state.best_config['overlap']}, "
+                        f"top_k={st.session_state.best_config['top_k']}")
+                st.rerun()
+
+# If no file uploaded but pipeline exists (from previous session), load it
+elif 'pipeline' not in st.session_state:
+    # Try to load existing vectorstore
+    import os
+    if os.path.exists("./chroma_db"):
+        try:
+            with st.spinner("Loading existing vectorstore..."):
+                from langchain_community.vectorstores import Chroma
+                
+                pipeline = RAGPipeline(
+                    use_reranking=use_reranking,
+                    use_query_reframing=use_query_reframing,
+                    use_hybrid_search=use_hybrid_search,
+                    dense_weight=dense_weight
+                )
+                
+                # Load existing vectorstore
+                pipeline.db.vectorstore = Chroma(
+                    persist_directory="./chroma_db",
+                    embedding_function=pipeline.embeddings
+                )
+
+                # Rebuild BM25 retriever for hybrid search
+                pipeline.db.rebuild_bm25_from_vectorstore()
+
+                st.session_state.pipeline = pipeline
+                st.info("Loaded existing vectorstore from previous session")
+        except Exception as e:
+            st.warning(f"⚠️ Could not load existing vectorstore: {str(e)}")
+            st.info("Please upload a document to create a new vectorstore")
+
+# Divider before chat
+st.divider()
+
+# Chat interface - Always visible
+st.subheader("Chat with your document")
+
+# Check if vectorstore exists
+if 'pipeline' in st.session_state and st.session_state.pipeline.db.vectorstore is not None:
+    pipeline = st.session_state.pipeline
+
+    # Sync pipeline settings with sidebar
+    pipeline.use_query_reframing = use_query_reframing
+    pipeline.use_reranking_flag = use_reranking
+    pipeline.use_hybrid_search = use_hybrid_search
+    pipeline.dense_weight = dense_weight
+    
     # Display chat history
     chat_container = st.container()
     with chat_container:
@@ -94,8 +171,12 @@ if uploaded_file:
                 # Show sources in expander
                 with st.expander("View Sources"):
                     for idx, source in enumerate(chat["sources"], 1):
-                        st.markdown(f"**Source {idx}:**")
-                        st.text(source["content"][:300] + "..." if len(source["content"]) > 300 else source["content"])
+                        # Add document name
+                        doc_name = source.get("metadata", {}).get("source", "Unknown")
+                        st.markdown(f"**Source {idx}** (from: *{doc_name}*)")
+                        
+                        content_preview = source["content"][:300] + "..." if len(source["content"]) > 300 else source["content"]
+                        st.text(content_preview)
                         st.divider()
 
     # Chat input at the bottom
@@ -122,8 +203,12 @@ if uploaded_file:
                 # Show sources in expander
                 with st.expander("View Sources"):
                     for idx, source in enumerate(result["sources"], 1):
-                        st.markdown(f"**Source {idx}:**")
-                        st.text(source["content"][:300] + "..." if len(source["content"]) > 300 else source["content"])
+                        # Add document name
+                        doc_name = source.get("metadata", {}).get("source", "Unknown")
+                        st.markdown(f"**Source {idx}** (from: *{doc_name}*)")
+                        
+                        content_preview = source["content"][:300] + "..." if len(source["content"]) > 300 else source["content"]
+                        st.text(content_preview)
                         st.divider()
 
         # Add to chat history
@@ -136,6 +221,6 @@ if uploaded_file:
 
         # Rerun to update the display
         st.rerun()
-
 else:
-    st.info("Upload a document to get started")
+    # No vectorstore available
+    st.info("📤 Upload a document above to get started, or a saved vectorstore will load automatically if available")
