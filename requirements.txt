@@ -17,11 +17,8 @@ sentence-transformers
 # Environment variables
 python-dotenv
 
-# PDF processing (optional)
-PyPDF2
+# PDF processing
+pdfplumber
 
 # Frontend
 streamlit
-
-# Additional dependencies
-tiktoken

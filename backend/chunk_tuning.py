@@ -49,7 +49,7 @@ Questions:"""
                 relevance_scores = self.evaluator.predict(pairs)
 
                 relevant_count = sum(1 for s in relevance_scores if s > 0)
-                precision = (relevant_count / len(docs)) * 10    # Context precision score
+                precision = (relevant_count / len(docs)) * 10    # Retrieval relevance score
                 scores.append(precision)
 
             except Exception as e:
