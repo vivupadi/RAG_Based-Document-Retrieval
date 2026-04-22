@@ -8,6 +8,15 @@ Tackles major retrieval issues in production. Mainly:
 3. Missing out Keywords, Acronyms
 4. Only some of the context considered to answer. Information Loss
 
+
+### Improvement Strategy
+
+1. Query reframing
+2. Source Citation
+3. Semantic Chunking with hyperparameter tuning (Using Golden QA)
+4. Hybrid Search with Dense and Sparse(BM25)
+5. Re-Ranking
+
 ## Tech Stack
 
 - Python
