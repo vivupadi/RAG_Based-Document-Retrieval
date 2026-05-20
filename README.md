@@ -9,7 +9,7 @@ Tackles major retrieval issues in production. Mainly:
 4. Only some of the context considered to answer. Information Loss
 
 
-### Improvement Strategy
+### Improvement Strategy Implemented
 
 1. Query reframing
 2. Source Citation
@@ -23,3 +23,7 @@ Tackles major retrieval issues in production. Mainly:
 - Database : Chromadb
 - Frontend: Streamlit
 - Locally hosted
+
+## Future Scope
+
+- Streaming option enabled to reduce latency in response generation
